@@ -303,14 +303,13 @@ public:
   LinalgRewritePattern(MLIRContext *context)
       : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, context) {}
 
-  LogicalResult matchAndRewrite(Operation *op,
-                                PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(Operation *op, PatternRewriter &rewriter) const override {
                                   
     SingletonLogger::getInstance() << "Test:[" << op->getName().getStringRef().str() << "]\t";
 
-    auto linalgOp = dyn_cast<LinalgOp>(op);
+    auto linalgOp = dyn_cast<MatmulOp>(op);
 
-    if (!isa<LinalgOp>(op) || !linalgOp.hasBufferSemantics()) {
+    if (!isa<MatmulOp>(op) || !linalgOp.hasBufferSemantics()) {
       SingletonLogger::getInstance() << "Fail To Match!" << "\n";
       return rewriter.notifyMatchFailure(
           op, "expected linalg op with buffer semantics");
