@@ -266,37 +266,32 @@ static FailureOr<LinalgLoops> linalgOpToLoopsImpl(RewriterBase &rewriter,
 
 class SingletonLogger {
 public:
-    // 获取单例实例的静态方法
-    static SingletonLogger& getInstance() {
-        static SingletonLogger instance; // 在第一次调用时创建唯一实例
-        return instance;
-    }
+  static SingletonLogger& getInstance() {
+    static SingletonLogger instance;
+    return instance;
+  }
+  template <typename T>
+  SingletonLogger& operator<<(const T& data) {
+    logFile << data;
+    return *this; 
+  }
 
-    // 重载 << 操作符，用于写入数据到文件中
-    template <typename T>
-    SingletonLogger& operator<<(const T& data) {
-        logFile << data;
-        return *this; // 返回当前对象以支持连续的 << 调用
-    }
-
-    // 禁用拷贝构造和拷贝赋值操作符
-    SingletonLogger(const SingletonLogger&) = delete;
-    SingletonLogger& operator=(const SingletonLogger&) = delete;
+  // Forbit the following methods
+  SingletonLogger(const SingletonLogger&) = delete;
+  SingletonLogger& operator=(const SingletonLogger&) = delete;
 
 private:
-    // 私有构造函数，确保只能通过 getInstance 方法访问
+    // Ensure only Construct / Deconstruct from `getInstance()`
     SingletonLogger() {
-        logFile.open("log.txt", std::ios::app); // 以向后追加方式打开文件
+        logFile.open("debug.log", std::ios::app);  // file append
     }
-
-    // 私有析构函数，确保只能通过 getInstance 方法销毁
     ~SingletonLogger() {
         if (logFile.is_open()) {
             logFile.close();
         }
     }
 
-    std::ofstream logFile; // 文件流
+    std::ofstream logFile; // the real core
 };
 
 
