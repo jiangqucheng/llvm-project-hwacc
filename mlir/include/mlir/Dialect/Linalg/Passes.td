@@ -84,6 +84,24 @@ def LinalgLowerToLoops : Pass<"convert-linalg-to-loops"> {
   ];
 }
 
+def LinalgLowerToHWACC : Pass<"convert-linalg-to-hwacc"> {
+  let summary = "Lower the MATMUL operation from the linalg dialect into hwacc";
+  let description = [{
+    Lowers the `linalg.matmul` op to c call using `call`.
+
+    Pre-condition: the operands used by the `linalg` ops have buffer semantics,
+    i.e., tensor operands and results must be converted to memrefs via
+    bufferization.
+  }];
+  let constructor = "mlir::createConvertLinalgToHwaccPass()";
+  let dependentDialects = [
+    "func::FuncDialect",
+    "linalg::LinalgDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect"
+  ];
+}
+
 def LinalgLowerToParallelLoops
     : Pass<"convert-linalg-to-parallel-loops"> {
   let summary = "Lower the operations from the linalg dialect into parallel "

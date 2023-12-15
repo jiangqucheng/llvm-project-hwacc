@@ -44,6 +44,9 @@ std::unique_ptr<Pass> createLinalgInlineScalarOperandsPass();
 /// memref.load/memref.store accesses.
 std::unique_ptr<Pass> createConvertLinalgToLoopsPass();
 
+/// Create a pass to convert Linalg operations to Hwacc
+std::unique_ptr<Pass> createConvertLinalgToHwaccPass();
+
 /// Create a pass to convert Linalg operations to scf.parallel loops and
 /// memref.load/memref.store accesses.
 std::unique_ptr<Pass> createConvertLinalgToParallelLoopsPass();
