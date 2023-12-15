@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
@@ -43,6 +44,70 @@ namespace mlir {
 
 using namespace mlir;
 using namespace mlir::linalg;
+
+
+
+
+#define __POSITION__ "[" << __FILE__ << ":" << __LINE__ << "] "
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class SingletonLogger {
+public:
+  static SingletonLogger& getInstance() {
+    static SingletonLogger instance;
+    return instance;
+  }
+  template <typename T>
+  SingletonLogger& operator<<(const T& data) {
+    logFile << data;
+    return *this; 
+  }
+
+  // Forbit the following methods
+  SingletonLogger(const SingletonLogger&) = delete;
+  SingletonLogger& operator=(const SingletonLogger&) = delete;
+
+private:
+    // Ensure only Construct / Deconstruct from `getInstance()`
+    SingletonLogger() {
+        logFile.open("debug.log", std::ios::app);  // file append
+    }
+    ~SingletonLogger() {
+        if (logFile.is_open()) {
+            logFile.close();
+        }
+    }
+
+    std::ofstream logFile; // the real core
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 static SmallVector<Value> makeCanonicalAffineApplies(OpBuilder &b, Location loc,
                                                      AffineMap map,
@@ -159,10 +224,8 @@ static void emitScalarImplementation(OpBuilder &b, Location loc,
   // 1.b. Emit load from output views.
   for (OpOperand &outputOperand : linalgOp.getDpsInitsMutable()) {
     SmallVector<Value> indexing = makeCanonicalAffineApplies(
-        b, loc, linalgOp.getMatchingIndexingMap(&outputOperand),
-        allIvsPlusDims);
-    indexedValues.push_back(
-        b.create<LoadOpTy>(loc, outputOperand.get(), indexing));
+        b, loc, linalgOp.getMatchingIndexingMap(&outputOperand), allIvsPlusDims);
+    indexedValues.push_back(b.create<LoadOpTy>(loc, outputOperand.get(), indexing));
   }
 
   // TODO: When a region inliner exists, use it.
@@ -178,33 +241,23 @@ static void emitScalarImplementation(OpBuilder &b, Location loc,
         allIvsPlusDims));
     outputBuffers.push_back(outputOperand.get());
   }
-  inlineRegionAndEmitStore<LoadOpTy, StoreOpTy>(b, loc, linalgOp, indexedValues,
-                                                indexing, outputBuffers);
+  inlineRegionAndEmitStore<LoadOpTy, StoreOpTy>(b, loc, linalgOp, indexedValues, indexing, outputBuffers);
 }
 
-/// Replace the index operations in the body of the loop nest by the matching
-/// induction variables.
+
+/// Replace the index operations in the body of the loop nest by the matching induction variables.
 static void replaceIndexOpsByInductionVariables(RewriterBase &rewriter,
                                                 LinalgOp linalgOp,
                                                 ArrayRef<Operation *> loopOps) {
   // Extract the induction variables of the loop nest from outer to inner.
   SmallVector<Value> allIvs;
   for (Operation *loopOp : loopOps) {
-    llvm::TypeSwitch<Operation *>(loopOp)
-        .Case([&](scf::ParallelOp parallelOp) {
-          allIvs.append(parallelOp.getInductionVars().begin(),
-                        parallelOp.getInductionVars().end());
-        })
-        .Case([&](scf::ForOp forOp) {
-          allIvs.push_back(forOp.getInductionVar());
-        })
-        .Case([&](affine::AffineForOp affineForOp) {
-          allIvs.push_back(affineForOp.getInductionVar());
-        })
-        .Default([&](Operation *op) { assert(false && "unexpected op"); });
+    llvm::TypeSwitch<Operation *>( loopOp ).Case([&](scf::ForOp forOp) { allIvs.push_back(forOp.getInductionVar()); })
+                                           .Default([&](Operation *op) { assert(false && "unexpected op"); })
+                                           ;
   }
-  assert(linalgOp.getNumLoops() == allIvs.size() &&
-         "expected the number of loops and induction variables to match");
+  assert(linalgOp.getNumLoops() == allIvs.size() && "expected the number of loops and induction variables to match");
+
   // Replace the index operations in the body of the innermost loop op.
   if (!loopOps.empty()) {
     auto loopOp = cast<LoopLikeOpInterface>(loopOps.back());
@@ -214,15 +267,12 @@ static void replaceIndexOpsByInductionVariables(RewriterBase &rewriter,
   }
 }
 
-template <typename LoopTy>
+
+
 static FailureOr<LinalgLoops> linalgOpToLoopsImpl(RewriterBase &rewriter,
                                                   LinalgOp linalgOp) {
-  using LoadOpTy =
-      std::conditional_t<std::is_same<LoopTy, affine::AffineForOp>::value,
-                         affine::AffineLoadOp, memref::LoadOp>;
-  using StoreOpTy =
-      std::conditional_t<std::is_same<LoopTy, affine::AffineForOp>::value,
-                         affine::AffineStoreOp, memref::StoreOp>;
+  using LoadOpTy = memref::LoadOp;
+  using StoreOpTy = memref::StoreOp;
 
   // The flattened loopToOperandRangesMaps is expected to be an invertible
   // permutation map (which is asserted in the inverse calculation).
@@ -233,27 +283,24 @@ static FailureOr<LinalgLoops> linalgOpToLoopsImpl(RewriterBase &rewriter,
   auto iteratorTypes = linalgOp.getIteratorTypesArray();
 
   SmallVector<Value> allIvs;
-  GenerateLoopNest<LoopTy>::doit(
-      rewriter, linalgOp.getLoc(), loopRanges, linalgOp, iteratorTypes,
-      [&](OpBuilder &b, Location loc, ValueRange ivs,
-          ValueRange operandValuesToUse) -> scf::ValueVector {
-        assert(operandValuesToUse == linalgOp->getOperands() &&
-               "expect operands are captured and not passed by loop argument");
-        allIvs.append(ivs.begin(), ivs.end());
-        emitScalarImplementation<LoadOpTy, StoreOpTy>(b, loc, allIvs, linalgOp);
-        return scf::ValueVector{};
-      });
+  GenerateLoopNest<scf::ForOp>::doit(
+    rewriter, linalgOp.getLoc(), loopRanges, linalgOp, iteratorTypes,
+    [&](OpBuilder &b, Location loc, ValueRange ivs, ValueRange operandValuesToUse) -> scf::ValueVector {
+      assert(operandValuesToUse == linalgOp->getOperands() && "expect operands are captured and not passed by loop argument");
+      allIvs.append(ivs.begin(), ivs.end());
+      emitScalarImplementation<LoadOpTy, StoreOpTy>(b, loc, allIvs, linalgOp);
+      return scf::ValueVector{};
+    }
+  );
   // Number of loop ops might be different from the number of ivs since some
   // loops like affine.parallel and scf.parallel have multiple ivs.
   SetVector<Operation *> loopSet;
   for (Value iv : allIvs) {
-    if (!iv)
-      return failure();
+    if (!iv) return failure();
     // The induction variable is a block argument of the entry block of the
     // loop operation.
     BlockArgument ivVal = dyn_cast<BlockArgument>(iv);
-    if (!ivVal)
-      return failure();
+    if (!ivVal) return failure();
     loopSet.insert(ivVal.getOwner()->getParentOp());
   }
   LinalgLoops loops(loopSet.begin(), loopSet.end());
@@ -264,113 +311,235 @@ static FailureOr<LinalgLoops> linalgOpToLoopsImpl(RewriterBase &rewriter,
 
 
 
-class SingletonLogger {
-public:
-  static SingletonLogger& getInstance() {
-    static SingletonLogger instance;
-    return instance;
-  }
-  template <typename T>
-  SingletonLogger& operator<<(const T& data) {
-    logFile << data;
-    return *this; 
-  }
 
-  // Forbit the following methods
-  SingletonLogger(const SingletonLogger&) = delete;
-  SingletonLogger& operator=(const SingletonLogger&) = delete;
 
-private:
-    // Ensure only Construct / Deconstruct from `getInstance()`
-    SingletonLogger() {
-        logFile.open("debug.log", std::ios::app);  // file append
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+LogicalResult appendMangledType(llvm::raw_string_ostream &ss, Type t) {
+  if (auto memref = llvm::dyn_cast<MemRefType>(t)) {
+    ss << "view";
+    for (auto size : memref.getShape())
+      if (size < 0)
+        ss << "sx";
+      else
+        ss << size << "x";
+    if (failed(appendMangledType(ss, memref.getElementType())))
+      return failure();
+    if (auto as = memref.getMemorySpace()) {
+      if (auto attr = llvm::dyn_cast<IntegerAttr>(as))
+        ss << "as" << attr.getInt();
+      else
+        return failure();
     }
-    ~SingletonLogger() {
-        if (logFile.is_open()) {
-            logFile.close();
-        }
-    }
+    return success();
+  }
+  if (auto vec = llvm::dyn_cast<VectorType>(t)) {
+    ss << "vector";
+    llvm::interleave(
+        vec.getShape(), [&](int64_t i) { ss << i; }, [&]() { ss << "x"; });
+    if (failed(appendMangledType(ss, vec.getElementType())))
+      return failure();
+    return success();
+  } else if (t.isSignlessIntOrIndexOrFloat()) {
+    ss << t;
+    return success();
+  }
+  return failure();
+}
 
-    std::ofstream logFile; // the real core
-};
+// std::string MatmulOp_generateLibraryCallName(Operation *op) {
+//   static uint MatmulOp_generateLibraryCallName_Counter = 0;
+//   assert(isa<MatmulOp>(op) && "expected a matmul op here");
+//   std::string name(op->getName().getStringRef().str());
+//   name.reserve(128);
+//   std::replace(name.begin(), name.end(), '.', '_');
+//   llvm::raw_string_ostream ss(name);
+//   ss << "_" << std::to_string(MatmulOp_generateLibraryCallName_Counter);
+//   ss << "_";
+//   std::string res = ss.str();
+//   res.pop_back();
+//   MatmulOp_generateLibraryCallName_Counter++;
+//   return res;
+// }
+
+std::string MatmulOp_generateLibraryCallName(Operation *op) {
+  assert(isa<LinalgOp>(op));
+  std::string name(op->getName().getStringRef().str());
+  std::string fun = "";
+  for (NamedAttribute kv : op->getAttrs()) {
+    if (UnaryFnAttr ufa = llvm::dyn_cast<UnaryFnAttr>(kv.getValue())) {
+      fun = stringifyEnum(ufa.getValue()).str() + "_";
+    } else if (BinaryFnAttr bfa = llvm::dyn_cast<BinaryFnAttr>(kv.getValue())) {
+      fun = stringifyEnum(bfa.getValue()).str() + "_";
+    }
+  }
+  name.reserve(128);
+  std::replace(name.begin(), name.end(), '.', '_');
+  llvm::raw_string_ostream ss(name);
+  ss << "_" << fun;
+  for (Type t : op->getOperandTypes()) {
+    if (failed(appendMangledType(ss, t)))
+      return std::string();
+    ss << "_";
+  }
+  std::string res = ss.str();
+  res.pop_back();
+  return res;
+}
+
+
+
+static MemRefType makeStridedLayoutDynamic(MemRefType type) {
+  return MemRefType::Builder(type).setLayout(StridedLayoutAttr::get(
+      type.getContext(), ShapedType::kDynamic,
+      SmallVector<int64_t>(type.getRank(), ShapedType::kDynamic)));
+}
+
+/// Helper function to extract the operand types that are passed to the
+/// generated CallOp. MemRefTypes have their layout canonicalized since the
+/// information is not used in signature generation.
+/// Note that static size information is not modified.
+static SmallVector<Type, 4> extractOperandTypes(Operation *op) {
+  SmallVector<Type, 4> result;
+  result.reserve(op->getNumOperands());
+  for (auto type : op->getOperandTypes()) 
+  {
+    // The underlying descriptor type (e.g. LLVM) does not have layout information. 
+    // Canonicalizing the type at the level of std when going into a library call avoids needing to introduce DialectCastOp.
+    if (auto memrefType = dyn_cast<MemRefType>(type)) 
+      result.push_back(makeStridedLayoutDynamic(memrefType));
+    else 
+      result.push_back(type);
+  }
+  return result;
+}
+
+static FailureOr<FlatSymbolRefAttr> getLibraryCallSymbolRef(Operation *op, PatternRewriter &rewriter) {
+  assert(isa<MatmulOp>(op) && "expected a matmul op here");
+  auto matmulOp = cast<MatmulOp>(op);
+  // auto fnName = MatmulOp_generateLibraryCallName(matmulOp);
+  auto fnName = matmulOp.getLibraryCallName();
+  FlatSymbolRefAttr fnNameAttr = SymbolRefAttr::get(rewriter.getContext(), fnName);  // fnName is a dynamic std::string, unique it via a SymbolRefAttr.
+
+  SingletonLogger::getInstance() << __POSITION__ <<"fnNameAttr: Attr=" << fnNameAttr.getAttr().str() << " Value=" << fnNameAttr.getValue().str() << "\n";
+  
+  auto module = op->getParentOfType<ModuleOp>();
+  if (module.lookupSymbol(fnNameAttr.getAttr())) return fnNameAttr;
+
+  SingletonLogger::getInstance() << __POSITION__ <<"module: Name=" << module->getName().getStringRef().str() << "\n";
+
+  
+  SmallVector<Type, 4> inputTypes(extractOperandTypes(op));
+  if (op->getNumResults() != 0) return rewriter.notifyMatchFailure( op, "Library call for linalg operation can be generated only for ops that have void return types");
+
+  SingletonLogger::getInstance() << __POSITION__ <<"op: InputCnt=" << matmulOp->getNumOperands() << " OutputCnt=" << matmulOp->getNumResults() << "\n";
+  
+  auto libFnType = rewriter.getFunctionType(inputTypes, {});
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  
+  // Insert before module terminator.
+  rewriter.setInsertionPoint(module.getBody(),
+                             std::prev(module.getBody()->end()));
+  func::FuncOp funcOp = rewriter.create<func::FuncOp>(op->getLoc(), fnNameAttr.getValue(), libFnType);
+  // Insert a function attribute that will trigger the emission of the
+  // corresponding `_mlir_ciface_xxx` interface so that external libraries see
+  // a normalized ABI. This interface is added during std to llvm conversion.
+  funcOp->setAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName(),
+                  UnitAttr::get(op->getContext()));
+  funcOp.setPrivate();
+
+  return fnNameAttr;
+}
+
+static SmallVector<Value, 4> createTypeCanonicalizedMemRefOperands(OpBuilder &b, Location loc, ValueRange operands) {
+  SmallVector<Value, 4> res;
+  res.reserve(operands.size());
+  for (auto op : operands) {
+    auto memrefType = dyn_cast<MemRefType>(op.getType());
+    if (!memrefType) { res.push_back(op); continue; }
+    Value cast = b.create<memref::CastOp>(loc, makeStridedLayoutDynamic(memrefType), op);
+    res.push_back(cast);
+  }
+  return res;
+}
+
+
+
+
+
+
+
+
+
+
 
 
 
 namespace {
-template <typename LoopType>
+
 class LinalgRewritePattern : public RewritePattern {
 public:
-  LinalgRewritePattern(MLIRContext *context)
-      : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, context) {}
+  LinalgRewritePattern(MLIRContext *context) 
+  : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, context) 
+  {}
 
-  LogicalResult matchAndRewrite(Operation *op, PatternRewriter &rewriter) const override {
-                                  
-    SingletonLogger::getInstance() << "Test:[" << op->getName().getStringRef().str() << "]\t";
+  LogicalResult matchAndRewrite(Operation *op, PatternRewriter &rewriter) const override 
+  {
+    // SingletonLogger::getInstance() << "Test:[" << op->getName().getStringRef().str() << "]\t";
 
-    auto linalgOp = dyn_cast<MatmulOp>(op);
+    // auto linalgOp = cast<LinalgOp>(op);
+    // auto fnName = linalgOp.getLibraryCallName();
 
-    if (!isa<MatmulOp>(op) || !linalgOp.hasBufferSemantics()) {
-      SingletonLogger::getInstance() << "Fail To Match!" << "\n";
-      return rewriter.notifyMatchFailure(
-          op, "expected linalg op with buffer semantics");
+    auto matmulOp = dyn_cast<MatmulOp>(op);
+    if (!isa<MatmulOp>(op) || !matmulOp.hasBufferSemantics()) {
+      // SingletonLogger::getInstance() << "Fail To Match!" << "\n";
+      return rewriter.notifyMatchFailure(op, "expected MatmulOp with buffer semantics");
     }
 
-    SingletonLogger::getInstance() << "Capture!" << linalgOp->getName().getStringRef().str() << "\n";
+    SingletonLogger::getInstance() << __POSITION__ <<"[[" << matmulOp->getName().getStringRef().str() << "]] \t";
+    SingletonLogger::getInstance() << __POSITION__ <<"getLibraryCallName: " << matmulOp.getLibraryCallName() << "\n";
 
-    if (failed(linalgOpToLoopsImpl<LoopType>(rewriter, linalgOp)))
+    // if (fnName.empty()) return rewriter.notifyMatchFailure(op, "No library call defined for: ");
+
+    auto libraryCallName = getLibraryCallSymbolRef(matmulOp, rewriter);
+    if (failed(libraryCallName))
       return failure();
-    rewriter.eraseOp(op);
+    rewriter.replaceOpWithNewOp<func::CallOp>(
+      op, 
+      libraryCallName->getValue(), 
+      TypeRange(), 
+      createTypeCanonicalizedMemRefOperands(rewriter, op->getLoc(), op->getOperands())
+    );
+
+    // if (failed(linalgOpToLoopsImpl(rewriter, matmulOp))) return failure();
+    // rewriter.eraseOp(op);
+
+    SingletonLogger::getInstance() << "\n";
+
     return success();
   }
 };
 
-/// Local folding pattern for AffineApplyOp that we can apply greedily.
-/// This replaces AffineApplyOp by the proper value in cases where the
-/// associated map is trivial.
-/// A trivial map here is defined as a map with a single result and either:
-///   1. Zero operand + returns a single AffineConstantExpr
-///   2. One operand + returns a single AffineDimExpr
-///   3. One operand + returns a single AffineSymbolExpr
-//
-/// In the first case, the AffineApplyOp is replaced by a new constant. In the
-/// other cases, it is replaced by its unique operand.
-struct FoldAffineOp : public RewritePattern {
-  FoldAffineOp(MLIRContext *context)
-      : RewritePattern(affine::AffineApplyOp::getOperationName(), 0, context) {}
 
-  LogicalResult matchAndRewrite(Operation *op,
-                                PatternRewriter &rewriter) const override {
-    auto affineApplyOp = cast<affine::AffineApplyOp>(op);
-    auto map = affineApplyOp.getAffineMap();
-    if (map.getNumResults() != 1 || map.getNumInputs() > 1)
-      return failure();
-
-    AffineExpr expr = map.getResult(0);
-    if (map.getNumInputs() == 0) {
-      if (auto val = dyn_cast<AffineConstantExpr>(expr)) {
-        rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(op, val.getValue());
-        return success();
-      }
-      return failure();
-    }
-    if (dyn_cast<AffineDimExpr>(expr) || dyn_cast<AffineSymbolExpr>(expr)) {
-      rewriter.replaceOp(op, op->getOperand(0));
-      return success();
-    }
-    return failure();
-  }
-};
-
-template <typename LoopType>
 static void lowerLinalgToHwaccImpl(Operation *enclosingOp) {
   MLIRContext *context = enclosingOp->getContext();
   RewritePatternSet patterns(context);
-  patterns.add<LinalgRewritePattern<LoopType>>(context);
-  memref::DimOp::getCanonicalizationPatterns(patterns, context);
-  tensor::DimOp::getCanonicalizationPatterns(patterns, context);
-  affine::AffineApplyOp::getCanonicalizationPatterns(patterns, context);
-  patterns.add<FoldAffineOp>(context);
-  // Just apply the patterns greedily.
+  patterns.add<LinalgRewritePattern>(context);
+  // memref::DimOp::getCanonicalizationPatterns(patterns, context);
   (void)applyPatternsAndFoldGreedily(enclosingOp, std::move(patterns));
 }
 
@@ -379,7 +548,7 @@ struct LowerToHwacc : public impl::LinalgLowerToHWACCBase<LowerToHwacc> {
     registry.insert<memref::MemRefDialect, scf::SCFDialect>();
   }
   void runOnOperation() override {
-    lowerLinalgToHwaccImpl<scf::ForOp>(getOperation());
+    lowerLinalgToHwaccImpl(getOperation());
   }
 };
 
@@ -389,6 +558,8 @@ struct LowerToHwacc : public impl::LinalgLowerToHWACCBase<LowerToHwacc> {
 std::unique_ptr<Pass> mlir::createConvertLinalgToHwaccPass() {
   return std::make_unique<LowerToHwacc>();
 }
+
+
 
 // /// Emits a loop nest of `scf.for` with the proper body for `linalgOp`.
 // FailureOr<LinalgLoops> mlir::linalg::linalgOpToLoops(RewriterBase &rewriter,
